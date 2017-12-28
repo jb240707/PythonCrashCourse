@@ -13,8 +13,8 @@ friend_pizzas.append('alfredo')
 
 print("\nMy favorite pizzas are:")
 for toppings in pizzas:
-	print(toppings)
+    print(toppings)
 
 print("\nMy friend's favorite pizzas are:")
 for toppings in friend_pizzas:
-	print(toppings)
+    print(toppings)
