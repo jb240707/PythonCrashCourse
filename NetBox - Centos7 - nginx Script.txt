@@ -1,0 +1,140 @@
+************* Setup NetBox on CentOS 7.4 with Python3.5/Django, nginx, and Gunicorn *************
+
+#Disable SELinux
+sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+shutdown -r now
+
+#######Database Server
+
+#Install PostgreSQL repo and database applications
+yum install https://download.postgresql.org/pub/repos/yum/9.6/redhat/rhel-7-x86_64/pgdg-centos96-9.6-3.noarch.rpm
+yum install postgresql96 postgresql96-server postgresql96-devel
+
+#Initialize the database
+/usr/pgsql-9.6/bin/postgresql96-setup initdb
+
+#Allow password login for users
+sed -i -e 's/ident/md5/' /var/lib/pgsql/9.6/data/pg_hba.conf
+
+#Start the service
+service postgresql-9.6 start
+
+#Create username and database
+sudo -u postgres psql 
+
+CREATE DATABASE netbox;
+CREATE USER netbox WITH PASSWORD 'Nbx12345!';
+GRANT ALL PRIVILEGES ON DATABASE netbox TO netbox;
+\q
+
+#Test database
+psql -U netbox -W -h localhost netbox
+\q
+
+#######NetBox Application
+
+#Install Application Packages
+yum -y update
+yum -y install yum-utils
+yum -y groupinstall development
+yum -y install https://centos7.iuscommunity.org/ius-release.rpm
+yum -y install epel-release
+yum -y install -y gcc openssl-devel python35u python35u-devel git python35u-pip libxml2-devel libxslt-devel libffi-devel graphviz
+
+#Check Python version
+python3.5 -V
+
+# Create directory and clone files from GitHub.
+mkdir -p /opt/netbox
+cd /opt/netbox
+git clone -b master https://github.com/digitalocean/netbox.git .
+pip3.5 install -r requirements.txt
+
+#Create copy of configuration.py
+cp /opt/netbox/netbox/netbox/configuration.example.py /opt/netbox/netbox/netbox/configuration.py
+
+#Add username, password, Allowed hosts, and secret key to configuration.py
+User - netbox
+Password - Nbx12345!
+Allowed hosts nbx-tst.jnetdemo.net & 159.203.90.41
+Secret key - See next step
+
+#Generate secret key - /opt/netbox/netbox/generate_secret_key.py
+LQdGx7pme&PEMwy_zTa2+Usu!tS=)orv$0@F816H(fcqh539lI
+
+#Migrate data into database
+python3.5 /opt/netbox/netbox/manage.py migrate
+
+#Move static files
+python3.5 /opt/netbox/netbox/manage.py collectstatic
+
+#Create superuser
+/opt/netbox/netbox/manage.py createsuperuser
+
+#Test application 
+/opt/netbox/netbox/manage.py runserver 0.0.0.0:8000 --insecure
+
+
+#######Web Server
+
+#Install nginx webserver and Gunicorn WSGI service
+yum -y update
+yum install -y nginx
+pip3 install gunicorn
+
+#Create the file named /etc/yum.repos.d/nginx.repo
+[nginx]
+name=nginx repo
+baseurl=http://nginx.org/packages/centos/7/$basearch/
+gpgcheck=0
+enabled=1
+
+#Create NGINX config - /etc/nginx/conf.d/netbox.conf
+server {
+    listen 80;
+
+    server_name nbx-tst.jnetdemo.net;
+
+    client_max_body_size 25m;
+
+    location /static/ {
+        alias /opt/netbox/netbox/static/;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header X-Forwarded-Host $server_name;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header P3P 'CP="ALL DSP COR PSAa PSDa OUR NOR ONL UNI COM NAV"';
+    }
+}
+
+#Remove default - /etc/nginx/conf.d/default
+rm /etc/nginx/conf.d/default
+
+#Add a user for running Gunicorn and Supervisor services
+useradd -M netbox
+
+#Gunicorn config - /opt/netbox/gunicorn_config.py
+command = '/usr/bin/gunicorn'
+pythonpath = '/opt/netbox/netbox'
+bind = '0.0.0.0:8001'
+workers = 3
+user = 'netbox'
+
+#Supervisor config - /etc/supervisord.d/netbox.ini
+[program:netbox]
+command = gunicorn -c /opt/netbox/gunicorn_config.py netbox.wsgi
+directory = /opt/netbox/netbox/
+user = netbox
+
+#Enable and start nginx and Supervisor
+systemctl enable nginx
+systemctl enable supervisord
+systemctl restart nginx
+systemctl restart supervisord
+
+#Check status of NetBox services
+systemctl status nginx
+supervisorctl status
